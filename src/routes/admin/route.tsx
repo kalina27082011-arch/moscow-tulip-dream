@@ -10,7 +10,7 @@ export const Route = createFileRoute("/admin")({
       throw redirect({ to: "/auth" });
     }
     // Make sure first owner claims admin if needed.
-    await supabase.rpc("claim_first_admin").catch(() => null);
+    try { await supabase.rpc("claim_first_admin"); } catch { /* noop */ }
     const { data: roles } = await supabase
       .from("user_roles")
       .select("role")

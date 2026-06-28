@@ -29,13 +29,13 @@ function AuthPage() {
         });
         if (error) throw error;
         // Try to claim as the first owner immediately.
-        await supabase.rpc("claim_first_admin").catch(() => null);
+        try { await supabase.rpc("claim_first_admin"); } catch { /* noop */ }
         toast.success("Аккаунт создан. Если включена верификация — проверьте почту.");
         navigate({ to: "/admin" });
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        await supabase.rpc("claim_first_admin").catch(() => null);
+        try { await supabase.rpc("claim_first_admin"); } catch { /* noop */ }
         toast.success("Добро пожаловать");
         navigate({ to: "/admin" });
       }
