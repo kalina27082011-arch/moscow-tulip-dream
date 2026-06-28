@@ -1,0 +1,328 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { resolveProductImage } from "@/lib/product-images";
+import { formatPrice } from "@/lib/format";
+import type { Tables } from "@/integrations/supabase/types";
+
+type Product = Tables<"products">;
+
+export const Route = createFileRoute("/admin/products")({
+  component: ProductsAdmin,
+});
+
+const EMPTY: Partial<Product> = {
+  slug: "",
+  name: "",
+  price: 2900,
+  description: "",
+  composition: "",
+  color_tag: "pink",
+  image_url: "tulips-mayya.jpg",
+  sort_order: 100,
+  is_active: true,
+};
+
+function ProductsAdmin() {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState<Partial<Product> | null>(null);
+
+  const { data: products, isLoading } = useQuery({
+    queryKey: ["admin-products"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("*")
+        .order("sort_order");
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const save = useMutation({
+    mutationFn: async (p: Partial<Product>) => {
+      const payload = {
+        slug: p.slug!,
+        name: p.name!,
+        price: Number(p.price) || 0,
+        description: p.description ?? "",
+        composition: p.composition ?? "",
+        color_tag: p.color_tag ?? "pink",
+        image_url: p.image_url ?? "tulips-mayya.jpg",
+        sort_order: Number(p.sort_order) || 100,
+        is_active: p.is_active ?? true,
+      };
+      if (p.id) {
+        const { error } = await supabase.from("products").update(payload).eq("id", p.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("products").insert(payload);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-products"] });
+      qc.invalidateQueries({ queryKey: ["products", "all"] });
+      qc.invalidateQueries({ queryKey: ["products", "featured"] });
+      toast.success("Сохранено");
+      setEditing(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("products").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-products"] });
+      toast.success("Удалено");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-8">
+        <div>
+          <h1 className="serif text-4xl">Букеты</h1>
+          <p className="text-sm text-muted-foreground mt-2">
+            Всего: {products?.length ?? 0}
+          </p>
+        </div>
+        <button
+          onClick={() => setEditing(EMPTY)}
+          className="bg-[color:var(--ink)] text-[color:var(--cream)] px-5 py-3 text-xs uppercase tracking-[0.2em] hover:bg-[color:var(--sage)]"
+        >
+          + Новый букет
+        </button>
+      </div>
+
+      {isLoading ? (
+        <p className="text-muted-foreground">Загружаем…</p>
+      ) : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-10">
+          {products?.map((p) => (
+            <div key={p.id} className="group">
+              <div className="aspect-[3/4] bg-[color:var(--secondary)] overflow-hidden relative">
+                <img
+                  src={resolveProductImage(p.image_url)}
+                  alt={p.name}
+                  className="w-full h-full object-cover"
+                />
+                {!p.is_active && (
+                  <div className="absolute inset-0 bg-[color:var(--ink)]/70 text-[color:var(--cream)] flex items-center justify-center text-xs uppercase tracking-[0.25em]">
+                    скрыт
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 flex items-baseline justify-between">
+                <h3 className="serif text-xl">{p.name}</h3>
+                <span className="text-sm text-muted-foreground">{formatPrice(p.price)}</span>
+              </div>
+              <div className="mt-3 flex gap-3 text-xs uppercase tracking-[0.15em]">
+                <button
+                  onClick={() => setEditing(p)}
+                  className="text-[color:var(--ink)] hover:text-[color:var(--sage)]"
+                >
+                  Редактировать
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm(`Удалить «${p.name}»?`)) remove.mutate(p.id);
+                  }}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  Удалить
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <ProductEditor
+          value={editing}
+          onChange={setEditing}
+          onClose={() => setEditing(null)}
+          onSave={() => save.mutate(editing)}
+          saving={save.isPending}
+        />
+      )}
+    </div>
+  );
+}
+
+const IMAGE_CHOICES = [
+  "tulips-mayya.jpg",
+  "tulips-serenada.jpg",
+  "tulips-zamoskvorechye.jpg",
+  "tulips-noche.jpg",
+  "tulips-solntse.jpg",
+  "tulips-vesna.jpg",
+  "tulips-utro.jpg",
+];
+
+function ProductEditor({
+  value,
+  onChange,
+  onClose,
+  onSave,
+  saving,
+}: {
+  value: Partial<Product>;
+  onChange: (p: Partial<Product>) => void;
+  onClose: () => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 bg-[color:var(--ink)]/40 flex items-end md:items-center justify-center p-0 md:p-6">
+      <div className="bg-[color:var(--cream)] w-full md:max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="serif text-2xl">{value.id ? "Редактировать букет" : "Новый букет"}</h2>
+          <button onClick={onClose} className="text-xs uppercase tracking-[0.2em]">Закрыть</button>
+        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSave();
+          }}
+          className="p-6 space-y-5"
+        >
+          <Row>
+            <Input label="Название" value={value.name ?? ""} onChange={(v) => onChange({ ...value, name: v })} required />
+            <Input label="Slug (URL)" value={value.slug ?? ""} onChange={(v) => onChange({ ...value, slug: v })} required />
+          </Row>
+          <Row>
+            <Input label="Цена, ₽" type="number" value={String(value.price ?? 0)} onChange={(v) => onChange({ ...value, price: Number(v) })} required />
+            <Input label="Сортировка" type="number" value={String(value.sort_order ?? 100)} onChange={(v) => onChange({ ...value, sort_order: Number(v) })} />
+          </Row>
+          <Row>
+            <Select
+              label="Цвет"
+              value={value.color_tag ?? "pink"}
+              onChange={(v) => onChange({ ...value, color_tag: v })}
+              options={[
+                { v: "pink", l: "Розовый" },
+                { v: "white", l: "Белый" },
+                { v: "red", l: "Бордовый" },
+                { v: "yellow", l: "Жёлтый" },
+                { v: "mixed", l: "Микс" },
+              ]}
+            />
+            <Select
+              label="Изображение"
+              value={value.image_url ?? IMAGE_CHOICES[0]}
+              onChange={(v) => onChange({ ...value, image_url: v })}
+              options={IMAGE_CHOICES.map((c) => ({ v: c, l: c }))}
+            />
+          </Row>
+          <Textarea label="Описание" value={value.description ?? ""} onChange={(v) => onChange({ ...value, description: v })} />
+          <Textarea label="Состав" value={value.composition ?? ""} onChange={(v) => onChange({ ...value, composition: v })} />
+          <label className="flex items-center gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={value.is_active ?? true}
+              onChange={(e) => onChange({ ...value, is_active: e.target.checked })}
+            />
+            Показывать в&nbsp;каталоге
+          </label>
+          <div className="pt-4 flex gap-3 justify-end border-t border-border">
+            <button type="button" onClick={onClose} className="px-5 py-3 text-xs uppercase tracking-[0.2em]">
+              Отмена
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="bg-[color:var(--ink)] text-[color:var(--cream)] px-6 py-3 text-xs uppercase tracking-[0.2em] hover:bg-[color:var(--sage)] disabled:opacity-60"
+            >
+              {saving ? "Сохраняем…" : "Сохранить"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function Row({ children }: { children: React.ReactNode }) {
+  return <div className="grid sm:grid-cols-2 gap-5">{children}</div>;
+}
+function Input({
+  label,
+  value,
+  onChange,
+  type = "text",
+  required,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  required?: boolean;
+}) {
+  return (
+    <div>
+      <label className="block text-xs uppercase tracking-[0.2em] text-muted-foreground mb-2">{label}</label>
+      <input
+        type={type}
+        value={value}
+        required={required}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-transparent border border-border px-3 py-2.5 text-sm"
+      />
+    </div>
+  );
+}
+function Textarea({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs uppercase tracking-[0.2em] text-muted-foreground mb-2">{label}</label>
+      <textarea
+        rows={3}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-transparent border border-border px-3 py-2.5 text-sm resize-none"
+      />
+    </div>
+  );
+}
+function Select({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { v: string; l: string }[];
+}) {
+  return (
+    <div>
+      <label className="block text-xs uppercase tracking-[0.2em] text-muted-foreground mb-2">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-transparent border border-border px-3 py-2.5 text-sm"
+      >
+        {options.map((o) => (
+          <option key={o.v} value={o.v}>{o.l}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
