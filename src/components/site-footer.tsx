@@ -46,8 +46,8 @@ export function SiteFooter() {
       </div>
       <div className="border-t border-border/60">
         <div className="mx-auto max-w-[1400px] px-6 lg:px-12 py-6 flex flex-wrap items-center justify-between text-xs text-muted-foreground">
-          <span>© {new Date().getFullYear()} tюlpa — ателье цветов</span>
           <Link to="/auth" className="hover:text-[color:var(--sage)]">Вход для владельца</Link>
+          <span className="pr-16 sm:pr-0">© {new Date().getFullYear()} tюlpa — ателье цветов</span>
         </div>
       </div>
     </footer>
