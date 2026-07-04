@@ -1,59 +1,17 @@
-# План: AI-чат-бот в правом нижнем углу
+Problem: the AI chat widget button is fixed at `bottom-6 right-6` with a 56×56 px circular button. On mobile, the footer’s bottom bar places the “Вход для владельца” link on the right, so it sits under the chat button and becomes hard to tap.
 
-Плавающая кнопка на всех страницах публичного сайта. Клик → форма (имя, телефон, согласие с политикой) → чат с ИИ, который знает каталог, помогает выбрать/собрать букет, оформляет заказ или зовёт оператора.
+Scope: a single presentation change in the footer bottom bar. No backend, no chat logic changes.
 
-## 1. База данных (миграция)
+Change:
+- In `src/components/site-footer.tsx`, reorder the bottom bar so the owner login link is on the left and the copyright text is on the right.
+- Keep the same row on desktop (`justify-between`), and ensure the right-side text has enough safe clearance from the chat button on mobile by adding a small right padding reserve on the copyright span or by stacking gracefully when space is tight (`flex-wrap`).
+- Preserve existing colors, font sizes, and hover state.
 
-Новые таблицы:
-- **`chat_conversations`** — сессия чата: `customer_name`, `phone`, `status` (`bot` / `waiting_operator` / `operator` / `closed`), `has_ticket`, `last_message_at`.
-- **`chat_messages`** — сообщения: `conversation_id`, `role` (`user` / `assistant` / `operator` / `system`), `content`, `created_at`.
+Implementation detail:
+```text
+before: [copyright] ............................ [login]
+after:  [login] .................................. [copyright]
+        ^ safe, away from fixed chat button      ^ may sit near chat button but is non-interactive
+```
 
-RLS + GRANT:
-- `anon`: `INSERT` + `SELECT/UPDATE` только своей сессии (по `id` из localStorage — по сути открытые, но ограниченные конкретным UUID; ключ хранится у клиента).
-- `authenticated` (админ): полный доступ через `has_role`.
-- Реалтайм включён на обе таблицы (`ALTER PUBLICATION supabase_realtime ADD TABLE ...`) — нужно для двустороннего чата с оператором.
-
-## 2. Виджет на сайте
-
-- `src/components/chat-widget.tsx` — плавающая круглая кнопка (в стиле сайта: `--ink` / `--blush`, никаких Sparkles) в правом нижнем углу, монтируется в `SiteLayout`.
-- Панель чата (drawer снизу-справа, ~380×560):
-  1. **Экран регистрации** — поля «Имя», «Телефон» (маска, zod-валидация), чекбокс «Согласен с [политикой](/privacy)». Кнопка «Начать чат».
-  2. **Экран чата** — сообщения (markdown через `react-markdown`), typing-индикатор, композер, кнопка «Позвать оператора».
-- ID сессии хранится в `localStorage` (`tulpa_chat_id`) — чтобы пользователь мог вернуться и увидеть историю.
-- Реалтайм-подписка на `chat_messages` для получения ответов ИИ / оператора.
-
-## 3. Серверная логика (TanStack `createServerFn`)
-
-`src/lib/chat.functions.ts`:
-- **`startConversation({ name, phone })`** — создаёт `chat_conversations`, возвращает `id`. Публичная.
-- **`sendUserMessage({ conversationId, text })`** — сохраняет user-сообщение, вызывает ИИ, стримит ответ через `toUIMessageStreamResponse`. Ответ ИИ пишется в `chat_messages`. Публичная, но проверяет, что `status !== 'operator'` (иначе просто сохраняет сообщение для оператора без ответа ИИ).
-- **Инструменты (tools) для ИИ**:
-  - `search_products` — читает `products` (активные), возвращает список с ценами и описанием.
-  - `create_order({ items, address, delivery_time, comment })` — создаёт `orders` + `order_items`, возвращает номер и сумму. Требует подтверждение пользователя (в промпте).
-  - `escalate_to_operator({ reason })` — переводит `status = 'waiting_operator'`, `has_ticket = true`, шлёт системное сообщение в чат.
-- Стрим-роут для чата: `src/routes/api/chat.ts` (`POST`) — использует `streamText` с `google/gemini-3-flash-preview` через `createLovableAiGatewayProvider`, системный промпт с ролью флориста-консультанта tюlpa (тон бренда), `stopWhen: stepCountIs(50)`.
-
-## 4. Админка
-
-Новый раздел **`/admin/chats`**:
-- Список бесед (сортировка по `last_message_at`), фильтр «все / с тикетом / активные / закрытые», бейдж «новый тикет».
-- Правая панель — просмотр беседы в реальном времени (реалтайм-подписка), композер для оператора.
-- Кнопка «Взять в работу» → `status = 'operator'` (ИИ замолкает), кнопка «Вернуть боту» / «Закрыть».
-- Ссылка на созданный заказ, если ИИ его оформил (`orders.chat_conversation_id`).
-- В сайдбар (`src/routes/admin/route.tsx`) — пункт «Чаты» с бейджем количества ожидающих оператора.
-
-Дашборд `/admin` — добавить KPI «Активных чатов» и «Тикетов в ожидании».
-
-## Технические детали
-
-- **Модель**: `google/gemini-3-flash-preview` через AI Gateway (`LOVABLE_API_KEY` уже есть).
-- **История**: сохраняется в БД, при каждом запросе к ИИ подгружается вся история беседы (stateless модель).
-- **Валидация**: zod на клиенте и в `inputValidator` server-функций (имя ≤ 100, телефон — regex РФ, сообщение ≤ 2000).
-- **Безопасность**: `create_order` через RPC/server-fn, все действия под серверной валидацией; ИИ не может изменить цены (использует `price` из БД по `product_id`).
-- **Промпт**: тон tюlpa (тёплый, минималистичный, «на вы»), инструкция: сначала уточни повод/бюджет → предложи 2-3 букета из каталога → подтверди состав → собери адрес и время → создай заказ → сообщи номер. При жалобах/нестандартных запросах → `escalate_to_operator`.
-
-## Ограничения (в этом заходе НЕ делаем)
-
-- Уведомления оператору (email/push) — можно добавить позже.
-- Оплата в чате — заказ создаётся со статусом `new`, оператор перезванивает.
-- Голосовые сообщения / фото от клиента.
+Verification: open the preview in mobile viewport, scroll to the footer, and confirm the “Вход для владельца” link is fully visible and tappable on the left side.
