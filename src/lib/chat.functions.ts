@@ -4,11 +4,11 @@ import { generateText, stepCountIs, tool } from "ai";
 import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
-async function assertAdmin(context: {
-  supabase: { rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown }> };
-  userId: string;
-}) {
-  const { data } = await context.supabase.rpc("has_role", {
+async function assertAdmin(context: { supabase: unknown; userId: string }) {
+  const supabase = context.supabase as {
+    rpc: (fn: "has_role", args: { _user_id: string; _role: "admin" }) => Promise<{ data: boolean | null }>;
+  };
+  const { data } = await supabase.rpc("has_role", {
     _user_id: context.userId,
     _role: "admin",
   });
