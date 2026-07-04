@@ -1,37 +1,59 @@
-## Причина
+# План: AI-чат-бот в правом нижнем углу
 
-Заявка в БД есть (одна запись от 04.07, «Анна», 6400 ₽, статус `new`), но админ-панель её не видит ни в дашборде, ни в списке заявок, ни в клиентах.
+Плавающая кнопка на всех страницах публичного сайта. Клик → форма (имя, телефон, согласие с политикой) → чат с ИИ, который знает каталог, помогает выбрать/собрать букет, оформляет заказ или зовёт оператора.
 
-Проверка прав в базе:
-```
-SELECT grantee, privilege_type FROM information_schema.role_table_grants
-WHERE table_schema='public' AND table_name IN ('orders','order_items');
-```
-показала, что у ролей `anon` и `authenticated` **нет ни одного GRANT** на `public.orders` и `public.order_items`. RLS-политики корректные, но PostgREST сначала проверяет табличные привилегии — без них Data API возвращает пустой результат/ошибку прав, а RLS даже не срабатывает. Поэтому `supabase.from("orders").select(...)` из браузера у админа возвращает пусто.
+## 1. База данных (миграция)
 
-Для `products` и `user_roles` GRANT'ы уже проставлены — там всё видно.
+Новые таблицы:
+- **`chat_conversations`** — сессия чата: `customer_name`, `phone`, `status` (`bot` / `waiting_operator` / `operator` / `closed`), `has_ticket`, `last_message_at`.
+- **`chat_messages`** — сообщения: `conversation_id`, `role` (`user` / `assistant` / `operator` / `system`), `content`, `created_at`.
 
-## Что делаю
+RLS + GRANT:
+- `anon`: `INSERT` + `SELECT/UPDATE` только своей сессии (по `id` из localStorage — по сути открытые, но ограниченные конкретным UUID; ключ хранится у клиента).
+- `authenticated` (админ): полный доступ через `has_role`.
+- Реалтайм включён на обе таблицы (`ALTER PUBLICATION supabase_realtime ADD TABLE ...`) — нужно для двустороннего чата с оператором.
 
-Одна миграция, которая добавляет недостающие права ровно там, где нужно, и не трогает существующие политики:
+## 2. Виджет на сайте
 
-```sql
--- orders: анонимы создают заявки, авторизованные админы читают/меняют
-GRANT INSERT ON public.orders TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.orders TO authenticated;
-GRANT ALL ON public.orders TO service_role;
+- `src/components/chat-widget.tsx` — плавающая круглая кнопка (в стиле сайта: `--ink` / `--blush`, никаких Sparkles) в правом нижнем углу, монтируется в `SiteLayout`.
+- Панель чата (drawer снизу-справа, ~380×560):
+  1. **Экран регистрации** — поля «Имя», «Телефон» (маска, zod-валидация), чекбокс «Согласен с [политикой](/privacy)». Кнопка «Начать чат».
+  2. **Экран чата** — сообщения (markdown через `react-markdown`), typing-индикатор, композер, кнопка «Позвать оператора».
+- ID сессии хранится в `localStorage` (`tulpa_chat_id`) — чтобы пользователь мог вернуться и увидеть историю.
+- Реалтайм-подписка на `chat_messages` для получения ответов ИИ / оператора.
 
--- order_items: анонимы добавляют позиции при оформлении, админы читают/меняют
-GRANT INSERT ON public.order_items TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.order_items TO authenticated;
-GRANT ALL ON public.order_items TO service_role;
-```
+## 3. Серверная логика (TanStack `createServerFn`)
 
-Роли `anon` даю только `INSERT` — оформление заказа с публичной страницы (политики `anyone can create order` / `anyone can add order items`). Чтение остаётся закрытым для не-админов через RLS.
+`src/lib/chat.functions.ts`:
+- **`startConversation({ name, phone })`** — создаёт `chat_conversations`, возвращает `id`. Публичная.
+- **`sendUserMessage({ conversationId, text })`** — сохраняет user-сообщение, вызывает ИИ, стримит ответ через `toUIMessageStreamResponse`. Ответ ИИ пишется в `chat_messages`. Публичная, но проверяет, что `status !== 'operator'` (иначе просто сохраняет сообщение для оператора без ответа ИИ).
+- **Инструменты (tools) для ИИ**:
+  - `search_products` — читает `products` (активные), возвращает список с ценами и описанием.
+  - `create_order({ items, address, delivery_time, comment })` — создаёт `orders` + `order_items`, возвращает номер и сумму. Требует подтверждение пользователя (в промпте).
+  - `escalate_to_operator({ reason })` — переводит `status = 'waiting_operator'`, `has_ticket = true`, шлёт системное сообщение в чат.
+- Стрим-роут для чата: `src/routes/api/chat.ts` (`POST`) — использует `streamText` с `google/gemini-3-flash-preview` через `createLovableAiGatewayProvider`, системный промпт с ролью флориста-консультанта tюlpa (тон бренда), `stopWhen: stepCountIs(50)`.
 
-## Проверка после миграции
+## 4. Админка
 
-1. `/admin` — на графике за 14 дней появляется точка 04.07 и «Анна» в «Последних заявках».
-2. `/admin/orders` — строка с заявкой, открывается Sheet с составом.
-3. `/admin/customers` — Анна с 1 заказом и суммой 6 400 ₽.
-4. Оформление нового заказа с публичного каталога по-прежнему работает (grant `anon INSERT` сохранён).
+Новый раздел **`/admin/chats`**:
+- Список бесед (сортировка по `last_message_at`), фильтр «все / с тикетом / активные / закрытые», бейдж «новый тикет».
+- Правая панель — просмотр беседы в реальном времени (реалтайм-подписка), композер для оператора.
+- Кнопка «Взять в работу» → `status = 'operator'` (ИИ замолкает), кнопка «Вернуть боту» / «Закрыть».
+- Ссылка на созданный заказ, если ИИ его оформил (`orders.chat_conversation_id`).
+- В сайдбар (`src/routes/admin/route.tsx`) — пункт «Чаты» с бейджем количества ожидающих оператора.
+
+Дашборд `/admin` — добавить KPI «Активных чатов» и «Тикетов в ожидании».
+
+## Технические детали
+
+- **Модель**: `google/gemini-3-flash-preview` через AI Gateway (`LOVABLE_API_KEY` уже есть).
+- **История**: сохраняется в БД, при каждом запросе к ИИ подгружается вся история беседы (stateless модель).
+- **Валидация**: zod на клиенте и в `inputValidator` server-функций (имя ≤ 100, телефон — regex РФ, сообщение ≤ 2000).
+- **Безопасность**: `create_order` через RPC/server-fn, все действия под серверной валидацией; ИИ не может изменить цены (использует `price` из БД по `product_id`).
+- **Промпт**: тон tюlpa (тёплый, минималистичный, «на вы»), инструкция: сначала уточни повод/бюджет → предложи 2-3 букета из каталога → подтверди состав → собери адрес и время → создай заказ → сообщи номер. При жалобах/нестандартных запросах → `escalate_to_operator`.
+
+## Ограничения (в этом заходе НЕ делаем)
+
+- Уведомления оператору (email/push) — можно добавить позже.
+- Оплата в чате — заказ создаётся со статусом `new`, оператор перезванивает.
+- Голосовые сообщения / фото от клиента.

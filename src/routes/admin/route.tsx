@@ -1,7 +1,7 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LayoutDashboard, ClipboardList, Flower2, Users, LogOut } from "lucide-react";
+import { LayoutDashboard, ClipboardList, Flower2, Users, LogOut, MessageCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import {
@@ -43,12 +43,13 @@ type NavItem = {
   label: string;
   icon: typeof LayoutDashboard;
   exact?: boolean;
-  badgeKey?: "new-orders";
+  badgeKey?: "new-orders" | "chat-tickets";
 };
 
 const NAV: NavItem[] = [
   { to: "/admin", label: "Дашборд", icon: LayoutDashboard, exact: true },
   { to: "/admin/orders", label: "Заявки", icon: ClipboardList, badgeKey: "new-orders" },
+  { to: "/admin/chats", label: "Чаты", icon: MessageCircle, badgeKey: "chat-tickets" },
   { to: "/admin/products", label: "Букеты", icon: Flower2 },
   { to: "/admin/customers", label: "Клиенты", icon: Users },
 ];
@@ -69,6 +70,20 @@ function AdminLayout() {
         .from("orders")
         .select("id", { count: "exact", head: true })
         .eq("status", "new");
+      if (error) throw error;
+      return count ?? 0;
+    },
+    refetchInterval: 30_000,
+  });
+
+  const { data: chatTicketsCount } = useQuery({
+    queryKey: ["admin", "chat-tickets-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("chat_conversations")
+        .select("id", { count: "exact", head: true })
+        .eq("has_ticket", true)
+        .neq("status", "closed");
       if (error) throw error;
       return count ?? 0;
     },
@@ -100,7 +115,8 @@ function AdminLayout() {
                   {NAV.map((item) => {
                     const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
                     const badge =
-                      item.badgeKey === "new-orders" && newOrdersCount ? newOrdersCount : null;
+                      item.badgeKey === "new-orders" && newOrdersCount ? newOrdersCount :
+                      item.badgeKey === "chat-tickets" && chatTicketsCount ? chatTicketsCount : null;
                     return (
                       <SidebarMenuItem key={item.to}>
                         <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
