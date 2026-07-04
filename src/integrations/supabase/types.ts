@@ -14,6 +14,71 @@ export type Database = {
   }
   public: {
     Tables: {
+      chat_conversations: {
+        Row: {
+          created_at: string
+          customer_name: string
+          has_ticket: boolean
+          id: string
+          last_message_at: string
+          phone: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          customer_name: string
+          has_ticket?: boolean
+          id?: string
+          last_message_at?: string
+          phone: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          customer_name?: string
+          has_ticket?: boolean
+          id?: string
+          last_message_at?: string
+          phone?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      chat_messages: {
+        Row: {
+          content: string
+          conversation_id: string
+          created_at: string
+          id: string
+          role: string
+        }
+        Insert: {
+          content: string
+          conversation_id: string
+          created_at?: string
+          id?: string
+          role: string
+        }
+        Update: {
+          content?: string
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chat_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "chat_conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       order_items: {
         Row: {
           id: string
@@ -59,6 +124,7 @@ export type Database = {
       orders: {
         Row: {
           address: string
+          chat_conversation_id: string | null
           comment: string
           created_at: string
           customer_name: string
@@ -70,6 +136,7 @@ export type Database = {
         }
         Insert: {
           address: string
+          chat_conversation_id?: string | null
           comment?: string
           created_at?: string
           customer_name: string
@@ -81,6 +148,7 @@ export type Database = {
         }
         Update: {
           address?: string
+          chat_conversation_id?: string | null
           comment?: string
           created_at?: string
           customer_name?: string
@@ -90,7 +158,15 @@ export type Database = {
           status?: string
           total?: number
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "orders_chat_conversation_id_fkey"
+            columns: ["chat_conversation_id"]
+            isOneToOne: false
+            referencedRelation: "chat_conversations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       products: {
         Row: {
