@@ -1,7 +1,23 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { LayoutDashboard, ClipboardList, Flower2, Users, LogOut } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
 
 export const Route = createFileRoute("/admin")({
   beforeLoad: async () => {
@@ -22,9 +38,19 @@ export const Route = createFileRoute("/admin")({
   component: AdminLayout,
 });
 
-const TABS = [
-  { to: "/admin", label: "Заявки", exact: true },
-  { to: "/admin/products", label: "Букеты", exact: false },
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  exact?: boolean;
+  badgeKey?: "new-orders";
+};
+
+const NAV: NavItem[] = [
+  { to: "/admin", label: "Дашборд", icon: LayoutDashboard, exact: true },
+  { to: "/admin/orders", label: "Заявки", icon: ClipboardList, badgeKey: "new-orders" },
+  { to: "/admin/products", label: "Букеты", icon: Flower2 },
+  { to: "/admin/customers", label: "Клиенты", icon: Users },
 ];
 
 function AdminLayout() {
@@ -36,6 +62,21 @@ function AdminLayout() {
     supabase.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null));
   }, []);
 
+  const { data: newOrdersCount } = useQuery({
+    queryKey: ["admin", "new-orders-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "new");
+      if (error) throw error;
+      return count ?? 0;
+    },
+    refetchInterval: 30_000,
+  });
+
+  const currentTitle = NAV.find((n) => (n.exact ? pathname === n.to : pathname.startsWith(n.to)))?.label ?? "Кабинет";
+
   const signOut = async () => {
     await supabase.auth.signOut();
     toast.success("Вы вышли");
@@ -43,44 +84,68 @@ function AdminLayout() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[color:var(--cream)]">
-      <header className="border-b border-border bg-[color:var(--cream)]">
-        <div className="mx-auto max-w-[1400px] px-6 lg:px-12 h-16 flex items-center justify-between">
-          <Link to="/" className="serif text-2xl">
-            tюlpa<span className="text-[color:var(--blush)]">.</span>
-            <span className="ml-3 text-xs uppercase tracking-[0.25em] text-muted-foreground">
-              кабинет
-            </span>
-          </Link>
-          <div className="flex items-center gap-6 text-sm">
-            <span className="hidden md:inline text-muted-foreground">{email}</span>
-            <button onClick={signOut} className="text-xs uppercase tracking-[0.2em] hover:text-[color:var(--sage)]">
-              Выйти
-            </button>
-          </div>
+    <SidebarProvider>
+      <div className="min-h-screen flex w-full bg-[color:var(--cream)]">
+        <Sidebar collapsible="icon">
+          <SidebarHeader className="border-b border-border">
+            <Link to="/" className="serif text-xl px-2 py-1 block">
+              tюlpa<span className="text-[color:var(--blush)]">.</span>
+            </Link>
+          </SidebarHeader>
+          <SidebarContent>
+            <SidebarGroup>
+              <SidebarGroupLabel>Кабинет</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {NAV.map((item) => {
+                    const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
+                    const badge =
+                      item.badgeKey === "new-orders" && newOrdersCount ? newOrdersCount : null;
+                    return (
+                      <SidebarMenuItem key={item.to}>
+                        <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
+                          <Link to={item.to} className="flex items-center gap-2">
+                            <item.icon className="h-4 w-4" />
+                            <span>{item.label}</span>
+                            {badge ? (
+                              <span className="ml-auto text-[10px] bg-[color:var(--blush)] text-[color:var(--ink)] px-1.5 py-0.5 rounded-full">
+                                {badge}
+                              </span>
+                            ) : null}
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </SidebarContent>
+          <SidebarFooter className="border-t border-border">
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={signOut} tooltip="Выйти">
+                  <LogOut className="h-4 w-4" />
+                  <span>Выйти</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+            <div className="px-2 py-1 text-[10px] text-muted-foreground truncate group-data-[collapsible=icon]:hidden">
+              {email}
+            </div>
+          </SidebarFooter>
+        </Sidebar>
+
+        <div className="flex-1 flex flex-col min-w-0">
+          <header className="h-14 border-b border-border bg-[color:var(--cream)] flex items-center gap-3 px-4 lg:px-8">
+            <SidebarTrigger />
+            <div className="serif text-lg">{currentTitle}</div>
+          </header>
+          <main className="flex-1 px-4 lg:px-8 py-8 overflow-x-auto">
+            <Outlet />
+          </main>
         </div>
-        <nav className="mx-auto max-w-[1400px] px-6 lg:px-12 flex gap-6 -mb-px">
-          {TABS.map((t) => {
-            const active = t.exact ? pathname === t.to : pathname.startsWith(t.to);
-            return (
-              <Link
-                key={t.to}
-                to={t.to}
-                className={`py-4 text-sm border-b-2 ${
-                  active
-                    ? "border-[color:var(--ink)] text-[color:var(--ink)]"
-                    : "border-transparent text-muted-foreground hover:text-[color:var(--ink)]"
-                }`}
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-        </nav>
-      </header>
-      <main className="flex-1 mx-auto w-full max-w-[1400px] px-6 lg:px-12 py-10">
-        <Outlet />
-      </main>
-    </div>
+      </div>
+    </SidebarProvider>
   );
 }

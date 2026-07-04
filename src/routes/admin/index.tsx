@@ -1,185 +1,209 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { toast } from "sonner";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { formatPrice, formatDate } from "@/lib/format";
 
 export const Route = createFileRoute("/admin/")({
-  component: OrdersAdmin,
+  component: Dashboard,
 });
 
-const STATUS = [
-  { id: "new", label: "Новые" },
-  { id: "confirmed", label: "Подтверждено" },
-  { id: "delivered", label: "Доставлено" },
-  { id: "cancelled", label: "Отменено" },
-];
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
 
-function OrdersAdmin() {
-  const qc = useQueryClient();
-  const [filter, setFilter] = useState<string>("all");
-  const [open, setOpen] = useState<string | null>(null);
+function Dashboard() {
+  const since = useMemo(() => {
+    const d = startOfDay(new Date());
+    d.setDate(d.getDate() - 13);
+    return d.toISOString();
+  }, []);
 
-  const { data: orders, isLoading } = useQuery({
-    queryKey: ["admin-orders"],
+  const { data: orders } = useQuery({
+    queryKey: ["admin", "dashboard-orders", since],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("orders")
-        .select("*, order_items(*)")
+        .select("id, total, status, customer_name, created_at")
+        .gte("created_at", since)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data;
+      return data ?? [];
     },
   });
 
-  const updateStatus = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      const { error } = await supabase.from("orders").update({ status }).eq("id", id);
+  const { data: topItems } = useQuery({
+    queryKey: ["admin", "dashboard-top-items"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("order_items")
+        .select("name_snapshot, qty, price_snapshot")
+        .limit(2000);
       if (error) throw error;
+      const map = new Map<string, { qty: number; revenue: number }>();
+      for (const it of data ?? []) {
+        const cur = map.get(it.name_snapshot) ?? { qty: 0, revenue: 0 };
+        cur.qty += it.qty;
+        cur.revenue += it.qty * it.price_snapshot;
+        map.set(it.name_snapshot, cur);
+      }
+      return Array.from(map.entries())
+        .map(([name, v]) => ({ name, ...v }))
+        .sort((a, b) => b.qty - a.qty)
+        .slice(0, 5);
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin-orders"] });
-      toast.success("Статус обновлён");
-    },
-    onError: (e: Error) => toast.error(e.message),
   });
 
-  const filtered = (orders ?? []).filter((o) => filter === "all" || o.status === filter);
+  const stats = useMemo(() => {
+    const list = orders ?? [];
+    const todayStart = startOfDay(new Date()).getTime();
+    const weekStart = todayStart - 6 * 86400_000;
+    const today = list.filter((o) => new Date(o.created_at).getTime() >= todayStart);
+    const week = list.filter((o) => new Date(o.created_at).getTime() >= weekStart);
+    const revToday = today.reduce((s, o) => s + o.total, 0);
+    const avg = list.length ? Math.round(list.reduce((s, o) => s + o.total, 0) / list.length) : 0;
+    const newCount = list.filter((o) => o.status === "new").length;
+    return {
+      todayCount: today.length,
+      revToday,
+      avg,
+      weekCount: week.length,
+      newCount,
+    };
+  }, [orders]);
+
+  const chartData = useMemo(() => {
+    const days: { day: string; label: string; count: number; revenue: number }[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = startOfDay(new Date());
+      d.setDate(d.getDate() - i);
+      days.push({
+        day: d.toISOString().slice(0, 10),
+        label: d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" }),
+        count: 0,
+        revenue: 0,
+      });
+    }
+    const index = new Map(days.map((d, i) => [d.day, i]));
+    for (const o of orders ?? []) {
+      const key = new Date(o.created_at).toISOString().slice(0, 10);
+      const i = index.get(key);
+      if (i != null) {
+        days[i].count += 1;
+        days[i].revenue += o.total;
+      }
+    }
+    return days;
+  }, [orders]);
+
+  const recent = (orders ?? []).slice(0, 5);
 
   return (
-    <div>
-      <div className="flex items-end justify-between mb-8">
-        <div>
-          <h1 className="serif text-4xl">Заявки</h1>
-          <p className="text-sm text-muted-foreground mt-2">
-            Всего: {orders?.length ?? 0}
-          </p>
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          <FilterBtn active={filter === "all"} onClick={() => setFilter("all")}>Все</FilterBtn>
-          {STATUS.map((s) => (
-            <FilterBtn key={s.id} active={filter === s.id} onClick={() => setFilter(s.id)}>
-              {s.label}
-            </FilterBtn>
-          ))}
-        </div>
+    <div className="space-y-10">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Kpi label="Заявок сегодня" value={String(stats.todayCount)} hint={`${stats.newCount} в статусе «новые»`} />
+        <Kpi label="Выручка сегодня" value={formatPrice(stats.revToday)} />
+        <Kpi label="Средний чек" value={formatPrice(stats.avg)} hint="за 14 дней" />
+        <Kpi label="Заявок за неделю" value={String(stats.weekCount)} />
       </div>
 
-      {isLoading ? (
-        <p className="text-muted-foreground">Загружаем…</p>
-      ) : filtered.length === 0 ? (
-        <div className="border border-dashed border-border py-20 text-center text-muted-foreground">
-          Заявок пока нет
+      <section className="border border-border p-6 bg-[color:var(--cream)]">
+        <div className="flex items-baseline justify-between mb-6">
+          <h2 className="serif text-2xl">Заявки за 14 дней</h2>
+          <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+            всего: {orders?.length ?? 0}
+          </span>
         </div>
-      ) : (
-        <div className="border border-border divide-y divide-border">
-          {filtered.map((o) => {
-            const isOpen = open === o.id;
-            return (
-              <div key={o.id}>
-                <button
-                  onClick={() => setOpen(isOpen ? null : o.id)}
-                  className="w-full text-left grid grid-cols-12 gap-4 px-6 py-4 hover:bg-[color:var(--secondary)]/50"
-                >
-                  <div className="col-span-3 serif text-lg">{o.customer_name}</div>
-                  <div className="col-span-3 text-sm text-muted-foreground">{o.phone}</div>
-                  <div className="col-span-3 text-sm text-muted-foreground">
-                    {formatDate(o.created_at)}
-                  </div>
-                  <div className="col-span-2 text-sm">{formatPrice(o.total)}</div>
-                  <div className="col-span-1 text-xs uppercase tracking-[0.15em] text-right">
-                    <StatusBadge status={o.status} />
-                  </div>
-                </button>
-                {isOpen && (
-                  <div className="px-6 pb-6 bg-[color:var(--secondary)]/40 grid md:grid-cols-2 gap-8">
-                    <div>
-                      <Detail label="Адрес" value={o.address} />
-                      <Detail label="Время" value={o.delivery_time} />
-                      <Detail label="Комментарий" value={o.comment || "—"} />
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-2">
-                        Состав
-                      </div>
-                      <ul className="space-y-1 text-sm">
-                        {o.order_items.map((it) => (
-                          <li key={it.id} className="flex justify-between gap-4">
-                            <span>{it.name_snapshot} × {it.qty}</span>
-                            <span className="text-muted-foreground">
-                              {formatPrice(it.price_snapshot * it.qty)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                      <div className="mt-6 flex flex-wrap gap-2">
-                        {STATUS.map((s) => (
-                          <button
-                            key={s.id}
-                            onClick={() => updateStatus.mutate({ id: o.id, status: s.id })}
-                            disabled={o.status === s.id}
-                            className={`text-xs uppercase tracking-[0.15em] px-3 py-2 border ${
-                              o.status === s.id
-                                ? "bg-[color:var(--ink)] text-[color:var(--cream)] border-[color:var(--ink)]"
-                                : "border-border hover:border-[color:var(--ink)]"
-                            }`}
-                          >
-                            {s.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="label" stroke="currentColor" fontSize={11} />
+              <YAxis stroke="currentColor" fontSize={11} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{
+                  background: "var(--cream)",
+                  border: "1px solid hsl(var(--border))",
+                  borderRadius: 0,
+                }}
+                labelStyle={{ color: "var(--ink)" }}
+                formatter={(v: number, k) =>
+                  k === "revenue" ? [formatPrice(v), "Выручка"] : [v, "Заявки"]
+                }
+              />
+              <Line type="monotone" dataKey="count" stroke="var(--ink)" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
-      )}
+      </section>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <section className="border border-border p-6 bg-[color:var(--cream)]">
+          <div className="flex items-baseline justify-between mb-4">
+            <h2 className="serif text-2xl">Последние заявки</h2>
+            <Link to="/admin/orders" className="text-xs uppercase tracking-[0.2em] hover:text-[color:var(--sage)]">
+              все →
+            </Link>
+          </div>
+          {recent.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Пока пусто.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {recent.map((o) => (
+                <li key={o.id} className="py-3 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="serif text-lg truncate">{o.customer_name}</div>
+                    <div className="text-xs text-muted-foreground">{formatDate(o.created_at)}</div>
+                  </div>
+                  <div className="text-sm text-right">
+                    <div>{formatPrice(o.total)}</div>
+                    <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground">{o.status}</div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="border border-border p-6 bg-[color:var(--cream)]">
+          <div className="flex items-baseline justify-between mb-4">
+            <h2 className="serif text-2xl">Топ-5 букетов</h2>
+            <Link to="/admin/products" className="text-xs uppercase tracking-[0.2em] hover:text-[color:var(--sage)]">
+              каталог →
+            </Link>
+          </div>
+          {!topItems || topItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Продаж пока нет.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {topItems.map((it) => (
+                <li key={it.name} className="py-3 flex items-center justify-between gap-4">
+                  <div className="serif text-lg truncate">{it.name}</div>
+                  <div className="text-sm text-right">
+                    <div>{it.qty} шт.</div>
+                    <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+                      {formatPrice(it.revenue)}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
 
-function FilterBtn({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
+function Kpi({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-2 text-xs uppercase tracking-[0.15em] border ${
-        active
-          ? "bg-[color:var(--ink)] text-[color:var(--cream)] border-[color:var(--ink)]"
-          : "border-border hover:border-[color:var(--ink)]"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="mb-4">
-      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{label}</div>
-      <div className="mt-1 text-sm">{value}</div>
+    <div className="border border-border p-5 bg-[color:var(--cream)]">
+      <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground">{label}</div>
+      <div className="serif text-3xl mt-2">{value}</div>
+      {hint && <div className="text-xs text-muted-foreground mt-1">{hint}</div>}
     </div>
   );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    new: "text-[color:var(--blush)]",
-    confirmed: "text-[color:var(--sage)]",
-    delivered: "text-muted-foreground",
-    cancelled: "text-destructive",
-  };
-  const label = STATUS.find((s) => s.id === status)?.label ?? status;
-  return <span className={map[status] ?? ""}>{label}</span>;
 }
