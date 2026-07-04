@@ -113,7 +113,7 @@ function ProductsAdmin() {
         is_active: p.is_active ?? true,
       });
       if (!parsed.success) {
-        throw new Error(parsed.error.errors[0]?.message ?? "Проверьте поля");
+        throw new Error(parsed.error.issues[0]?.message ?? "Проверьте поля");
       }
       const payload = parsed.data;
       if (p.id) {
