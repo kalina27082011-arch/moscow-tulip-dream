@@ -29,6 +29,8 @@ jobs:
         run: ls -la
       - name: List contents of dist
         run: ls -la dist
+      - name: List contents of dist/server
+        run: ls -la dist/server
       - name: List contents of dist/client
         run: ls -la dist/client
       - name: Setup Pages
