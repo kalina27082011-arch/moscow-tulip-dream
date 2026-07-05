@@ -27,6 +27,8 @@ jobs:
         run: npm run build
       - name: List files after build
         run: ls -la
+      - name: List contents of dist
+        run: ls -la dist
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact
